@@ -1,0 +1,9 @@
+{
+  "model": "intfloat/multilingual-e5-small",
+  "corpus_sha256": "0025215423298ad219f7d7e1e2da2bff2d1e17343ae076e3b60339a221e5bdc1",
+  "chunk_size": 400,
+  "chunk_overlap": 50,
+  "chunk_count": 451,
+  "embedding_dim": 384,
+  "normalized": true
+}
