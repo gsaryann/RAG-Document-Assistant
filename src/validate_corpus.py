@@ -85,7 +85,7 @@ def main() -> None:
     with zipfile.ZipFile(archive_path, "r") as archive:
         names = archive.namelist()
         require(len(names) == len(set(names)), "В documents.zip есть дублирующиеся пути")
-        require(set(names) == expected_members, "Содержимое documents.zip не соответствует текущим CSV/TXT")
+        require(set(names) == expected_members, f"Содержимое documents.zip не соответствует текущим CSV/TXT; архив={sorted(names)[:10]}, ожидалось={sorted(expected_members)[:10]}")
         require(archive.read("metadata.csv") == csv_path.read_bytes(), "metadata.csv внутри архива устарел")
         for filename in expected_files:
             require(
