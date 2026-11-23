@@ -31,7 +31,7 @@ RAG-Document-Assistant/
 │   ├── documents/               # 35 TXT-файлов статей Википедии
 │   ├── metadata.csv             # Метаданные (id, title, url, categories, word_count)
 │   ├── corpus.jsonl             # Полный корпус в JSON Lines
-│   ├── documents.zip            # Архив для дистрибуции
+│   ├── documents.zip            # Опциональный архив, пересоздаётся сборщиком
 │   └── README.md                # Отчёт о сборе и очистке данных
 ├── data/
 │   ├── raw/                     # Распакованные документы
