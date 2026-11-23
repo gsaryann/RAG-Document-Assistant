@@ -1,103 +1,97 @@
-import os
-import sys
+"""Strict consistency checks for the generated Wikipedia corpus."""
+from __future__ import annotations
+
 import json
-import csv
+import sys
+from pathlib import Path
+
 import pandas as pd
 
-sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
-base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-corpus_dir = os.path.join(base_dir, "corpus_cosmos")
-docs_dir = os.path.join(corpus_dir, "documents")
-csv_path = os.path.join(corpus_dir, "metadata.csv")
-jsonl_path = os.path.join(corpus_dir, "corpus.jsonl")
-readme_path = os.path.join(corpus_dir, "README.md")
 
-print("=== Проверка качества корпуса corpus_cosmos ===")
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise ValueError(message)
 
-# 1. Проверка структуры папок и файлов
-assert os.path.exists(corpus_dir), "Папка corpus_cosmos отсутствует!"
-assert os.path.exists(docs_dir), "Папка corpus_cosmos/documents отсутствует!"
-assert os.path.exists(csv_path), "Файл metadata.csv отсутствует!"
-assert os.path.exists(jsonl_path), "Файл corpus.jsonl отсутствует!"
-assert os.path.exists(readme_path), "Файл README.md отсутствует!"
-print("[OK] Все ключевые директории и файлы существуют.")
 
-# 2. Проверка metadata.csv
-df = pd.read_csv(csv_path, encoding='utf-8')
-expected_columns = ["id", "title", "url", "categories", "word_count", "file_name"]
-assert list(df.columns) == expected_columns, f"Колонки metadata.csv не совпадают! Получено: {list(df.columns)}"
-assert len(df) >= 30 and len(df) <= 40, f"Количество статей в CSV ({len(df)}) не попадает в диапазон 30-40!"
-assert df['title'].nunique() == len(df), "Обнаружены дубликаты по title в metadata.csv!"
-assert df['url'].nunique() == len(df), "Обнаружены дубликаты по url в metadata.csv!"
-assert df['file_name'].nunique() == len(df), "Обнаружены дубликаты по file_name в metadata.csv!"
-assert (df['word_count'] > 0).all(), "Обнаружены статьи с нулевым количеством слов в CSV!"
-print(f"[OK] metadata.csv валиден: {len(df)} уникальных строк, все поля корректны.")
+def main() -> None:
+    base_dir = Path(__file__).resolve().parent.parent
+    corpus_dir = base_dir / "corpus_cosmos"
+    docs_dir = corpus_dir / "documents"
+    csv_path = corpus_dir / "metadata.csv"
+    jsonl_path = corpus_dir / "corpus.jsonl"
+    readme_path = corpus_dir / "README.md"
 
-# 3. Проверка текстовых документов
-txt_files = sorted(os.listdir(docs_dir))
-assert len(txt_files) == len(df), f"Количество файлов ({len(txt_files)}) не совпадает с CSV ({len(df)})"
+    print("=== Проверка качества корпуса corpus_cosmos ===")
+    for path in (corpus_dir, docs_dir, csv_path, jsonl_path, readme_path):
+        require(path.exists(), f"Обязательный путь отсутствует: {path}")
+    require(docs_dir.is_dir(), "documents должен быть каталогом")
+    print("[OK] Структура корпуса существует.")
 
-total_words_from_files = 0
-for idx, row in df.iterrows():
-    fn = row['file_name']
-    fp = os.path.join(docs_dir, fn)
-    assert os.path.exists(fp), f"Файл {fn} не найден на диске!"
-    with open(fp, "r", encoding="utf-8") as f:
-        content = f.read()
-    assert len(content.strip()) > 0, f"Файл {fn} пуст!"
-    words = len(content.split())
-    total_words_from_files += words
-    assert words == row['word_count'], f"Несовпадение количества слов для {fn}: файл={words}, csv={row['word_count']}"
+    df = pd.read_csv(csv_path, encoding="utf-8")
+    expected_columns = ["id", "title", "url", "categories", "word_count", "file_name"]
+    require(list(df.columns) == expected_columns, f"Ожидались колонки {expected_columns}; получено {list(df.columns)}")
+    require(30 <= len(df) <= 40, f"Ожидалось 30–40 статей, получено {len(df)}")
+    for column in ("id", "title", "url", "file_name"):
+        require(df[column].notna().all(), f"В колонке {column} есть пустые значения")
+        require(df[column].nunique() == len(df), f"В колонке {column} есть дубликаты")
+    require(df["id"].is_unique, "ID статей должны быть уникальными")
+    require((df["word_count"] > 0).all(), "Обнаружены документы с нулевым word_count")
+    require(df["url"].astype(str).str.startswith("https://").all(), "URL источников должны использовать HTTPS")
+    print(f"[OK] metadata.csv: {len(df)} уникальных записей.")
 
-print(f"[OK] Все {len(txt_files)} TXT-файлов успешно прочитаны в UTF-8, пустых документов нет.")
-print(f"[OK] Суммарный объём по файлам: {total_words_from_files:,} слов.")
+    expected_files = set(df["file_name"].astype(str))
+    actual_files = {p.name for p in docs_dir.iterdir() if p.is_file() and p.suffix.lower() == ".txt"}
+    require(actual_files == expected_files, f"TXT-файлы не совпадают с CSV; отсутствуют={sorted(expected_files-actual_files)}, лишние={sorted(actual_files-expected_files)}")
+    total_words = 0
+    texts_by_name: dict[str, str] = {}
+    for row in df.to_dict("records"):
+        filename = str(row["file_name"])
+        require(Path(filename).name == filename and filename.lower().endswith(".txt"), f"Небезопасное имя файла: {filename}")
+        content = (docs_dir / filename).read_text(encoding="utf-8")
+        require(bool(content.strip()), f"Файл {filename} пуст")
+        word_count = len(content.split())
+        require(word_count == int(row["word_count"]), f"word_count mismatch для {filename}: файл={word_count}, CSV={row['word_count']}")
+        total_words += word_count
+        texts_by_name[filename] = content
+    print(f"[OK] {len(actual_files)} TXT-файлов соответствуют метаданным.")
 
-# 4. Проверка corpus.jsonl
-jsonl_records = []
-with open(jsonl_path, "r", encoding="utf-8") as f:
-    for line_idx, line in enumerate(f, 1):
-        assert line.strip(), f"Пустая строка #{line_idx} в corpus.jsonl"
-        record = json.loads(line)
-        jsonl_records.append(record)
+    records = []
+    with jsonl_path.open("r", encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, 1):
+            require(bool(line.strip()), f"Пустая строка #{line_number} в corpus.jsonl")
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Некорректный JSON в строке {line_number}: {exc}") from exc
+    require(len(records) == len(df), f"Количество JSONL-записей {len(records)} != CSV {len(df)}")
+    records_by_name = {record.get("file_name"): record for record in records}
+    require(len(records_by_name) == len(records), "В JSONL есть дублирующиеся file_name")
+    require(set(records_by_name) == expected_files, "Набор file_name в JSONL не совпадает с CSV")
+    for row in df.to_dict("records"):
+        record = records_by_name[str(row["file_name"])]
+        for field in ("id", "title", "url", "word_count", "file_name"):
+            require(str(record.get(field)) == str(row[field]), f"JSONL/CSV mismatch: {field} для {row['file_name']}")
+        require(record.get("text") == texts_by_name[str(row["file_name"])], f"Полный текст JSONL не совпадает с TXT: {row['file_name']}")
+        require(len(record["text"].split()) == int(row["word_count"]), f"Количество слов JSONL не совпадает: {row['file_name']}")
+    print(f"[OK] JSONL полностью синхронизирован с CSV и TXT ({len(records)} записей).")
 
-assert len(jsonl_records) == len(df), f"Количество записей в corpus.jsonl ({len(jsonl_records)}) != CSV ({len(df)})"
+    readme_text = readme_path.read_text(encoding="utf-8")
+    required_sections = [
+        "Источник данных", "Дата сбора", "Количество статей", "Общий объём текста",
+        "Тематические направления", "Структура корпуса", "Сведения об очистке текста",
+        "Список использованных категорий", "Инструкция по повторному запуску"
+    ]
+    missing = [section for section in required_sections if section.lower() not in readme_text.lower()]
+    require(not missing, f"В README отсутствуют разделы: {missing}")
 
-for record, (_, row) in zip(jsonl_records, df.iterrows()):
-    assert record['id'] == row['id'], f"ID mismatch: {record['id']} != {row['id']}"
-    assert record['title'] == row['title'], f"Title mismatch: {record['title']} != {row['title']}"
-    assert record['url'] == row['url'], f"URL mismatch: {record['url']} != {row['url']}"
-    assert record['word_count'] == row['word_count'], f"Word count mismatch"
-    assert record['file_name'] == row['file_name'], f"Filename mismatch"
-    assert len(record.get('text', '').strip()) > 0, f"Текст пуст в jsonl для ID {record['id']}"
-    assert len(record['text'].split()) == record['word_count'], "Word count in text does not match word_count field"
+    pages_equiv = total_words / 275
+    require(pages_equiv >= 50, f"Объём корпуса меньше 50 страниц: {pages_equiv:.1f}")
+    print(f"[OK] Объём: {total_words:,} слов (~{pages_equiv:.1f} страниц), минимум 50 страниц соблюдён.")
+    print("\nВСЕ ПРОВЕРКИ КОНТРОЛЯ КАЧЕСТВА УСПЕШНО ПРОЙДЕНЫ!")
 
-print(f"[OK] corpus.jsonl валиден: {len(jsonl_records)} записей, синхронизированы с CSV и TXT.")
 
-# 5. Проверка README.md
-with open(readme_path, "r", encoding="utf-8") as f:
-    readme_text = f.read()
-
-required_sections = [
-    "Источник данных",
-    "Дата сбора",
-    "Количество статей",
-    "Общий объём текста",
-    "Тематические направления",
-    "Структура корпуса",
-    "Сведения об очистке текста",
-    "Список использованных категорий",
-    "Инструкция по повторному запуску",
-]
-
-for req in required_sections:
-    assert req.lower() in readme_text.lower(), f"Раздел '{req}' не найден в README.md!"
-
-print(f"[OK] README.md содержит все обязательные разделы и сведения.")
-
-# 6. Проверка объёма (эквивалент 50 страниц)
-# 50 страниц при 250-300 слов/стр = 12500 - 15000 слов
-pages_equiv = total_words_from_files / 275
-print(f"[OK] Общий объём: {total_words_from_files:,} слов (~{pages_equiv:.1f} страниц). Требование 'не менее 50 страниц' перевыполнено в {pages_equiv / 50:.1f} раз!")
-
-print("\nВСЕ ПРОВЕРКИ КОНТРОЛЯ КАЧЕСТВА УСПЕШНО ПРОЙДЕНЫ!")
+if __name__ == "__main__":
+    main()

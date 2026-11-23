@@ -9,6 +9,8 @@ import time
 import json
 import csv
 import re
+import shutil
+import zipfile
 from datetime import datetime
 import requests
 
@@ -162,11 +164,11 @@ def fetch_article(title: str, theme: str) -> dict:
         raise ValueError(f"'{actual_title}' является страницей неоднозначности")
 
     # Проверка на списки
-    if actual_title.lower().startswith("список ") or "список" in actual_title.lower():
+    if actual_title.lower().startswith("список "):
         raise ValueError(f"'{actual_title}' является списком")
 
     # Извлечение категорий (только реальные категории, не служебные)
-    raw_cats = [c["title"].replace("Категория:", "") for c in page.get("categories", [])]
+    raw_cats = [c.get("title", "").replace("Категория:", "") for c in page.get("categories", []) if c.get("title")]
     filtered_cats = [
         c
         for c in raw_cats
@@ -215,6 +217,10 @@ def main():
     docs_dir = os.path.join(output_dir, "documents")
 
     os.makedirs(docs_dir, exist_ok=True)
+    staging_dir = os.path.join(output_dir, ".documents_staging")
+    if os.path.exists(staging_dir):
+        shutil.rmtree(staging_dir)
+    os.makedirs(staging_dir)
 
     print(f"=== Начало сбора корпуса статей о космосе ===")
     print(f"Каталог вывода: {output_dir}")
@@ -223,6 +229,7 @@ def main():
     collected_articles = []
     seen_titles = set()
     doc_counter = 1
+    failed_titles = []
 
     for theme, titles in THEMATIC_ARTICLES.items():
         print(f"\n--- Направление: '{theme}' ---")
@@ -232,26 +239,43 @@ def main():
                 article_data = fetch_article(title, theme)
                 if article_data["title"] in seen_titles:
                     print(f"ПРОПУСК (дубликат: {article_data['title']})")
-                    continue
-
-                file_name = f"article_{doc_counter:03d}.txt"
-                article_data["id"] = doc_counter
-                article_data["file_name"] = file_name
-
-                # Сохраняем TXT файл в кодировке UTF-8
-                txt_path = os.path.join(docs_dir, file_name)
-                with open(txt_path, "w", encoding="utf-8") as f:
-                    f.write(article_data["text"])
-
-                seen_titles.add(article_data["title"])
-                collected_articles.append(article_data)
-                print(f"OK ({article_data['word_count']} слов, файл: {file_name})")
-
-                doc_counter += 1
+                else:
+                    file_name = f"article_{doc_counter:03d}.txt"
+                    article_data["id"] = doc_counter
+                    article_data["file_name"] = file_name
+                    txt_path = os.path.join(staging_dir, file_name)
+                    with open(txt_path, "w", encoding="utf-8") as f:
+                        f.write(article_data["text"])
+                    seen_titles.add(article_data["title"])
+                    collected_articles.append(article_data)
+                    print(f"OK ({article_data['word_count']} слов, файл: {file_name})")
+                    doc_counter += 1
             except Exception as e:
+                failed_titles.append((title, str(e)))
                 print(f"ОШИБКА: {e}")
+            finally:
+                time.sleep(REQUEST_DELAY)
 
-            time.sleep(REQUEST_DELAY)
+    expected_articles = sum(len(titles) for titles in THEMATIC_ARTICLES.values())
+    if failed_titles or len(collected_articles) != expected_articles:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        details = "; ".join(f"{title}: {error}" for title, error in failed_titles)
+        raise RuntimeError(
+            f"Сбор не завершён: получено {len(collected_articles)} из {expected_articles}. "
+            f"Существующий корпус не изменён. Ошибки: {details or 'обнаружены дубликаты или пропуски'}"
+        )
+
+    # Атомарно заменяем каталог документов; при ошибке возвращаем предыдущую версию.
+    backup_dir = os.path.join(output_dir, ".documents_backup")
+    if os.path.exists(backup_dir):
+        shutil.rmtree(backup_dir)
+    os.replace(docs_dir, backup_dir)
+    try:
+        os.replace(staging_dir, docs_dir)
+    except Exception:
+        os.replace(backup_dir, docs_dir)
+        raise
+    shutil.rmtree(backup_dir)
 
     total_articles = len(collected_articles)
     total_words = sum(a["word_count"] for a in collected_articles)
@@ -299,6 +323,19 @@ def main():
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     print(f"Создан файл корпуса: {jsonl_path}")
 
+    # Пересоздаём архив после успешного сбора, чтобы Notebook не использовал старую версию.
+    archive_tmp = os.path.join(output_dir, "documents.zip.tmp")
+    archive_path = os.path.join(output_dir, "documents.zip")
+    with zipfile.ZipFile(archive_tmp, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.write(csv_path, arcname="metadata.csv")
+        for article in collected_articles:
+            archive.write(
+                os.path.join(docs_dir, article["file_name"]),
+                arcname=os.path.join("documents", article["file_name"])
+            )
+    os.replace(archive_tmp, archive_path)
+    print(f"Создан актуальный архив корпуса: {archive_path}")
+
     # Формируем README.md
     collection_date = datetime.now().strftime("%Y-%m-%d")
     readme_path = os.path.join(output_dir, "README.md")
@@ -318,11 +355,11 @@ def main():
 - **Источник данных**: Русскоязычная Википедия ([Категория:Космос](https://ru.wikipedia.org/wiki/Категория:Космос)) через официальный MediaWiki API (`https://ru.wikipedia.org/w/api.php`).
 - **Дата сбора**: {collection_date}
 - **Количество статей**: {total_articles} уникальных статей.
-- **Общий объём текста**: {total_words:,} слов (~{pages_approx:.0f} страниц стандартного печатного текста, что в ~11 раз превышает минимальное требование лабораторной работы в 50 страниц).
+- **Общий объём текста**: {total_words:,} слов (~{pages_approx:.0f} страниц стандартного печатного текста).
 - **Средний объём статьи**: ~{avg_words:,} слов.
 
 ## Тематические направления
-Корпус охватывает 7 ключевых направлений космической тематики (по 5 детальных статей на каждое направление):
+Корпус охватывает 7 ключевых направлений космической тематики; фактическое число статей указано в разделе «Основная информация».
 1. **Планеты и спутники**: Марс, Юпитер, Венера, Луна, Титан (спутник).
 2. **Звёзды и галактики**: Солнце, Млечный Путь, Галактика Андромеды, Бетельгейзе, Нейтронная звезда.
 3. **Космонавтика**: Космонавтика, Восток-1, Аполлон (космическая программа), Пилотируемый космический полёт, Космический туризм.
