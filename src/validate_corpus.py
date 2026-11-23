@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -23,6 +24,7 @@ def main() -> None:
     csv_path = corpus_dir / "metadata.csv"
     jsonl_path = corpus_dir / "corpus.jsonl"
     readme_path = corpus_dir / "README.md"
+    archive_path = corpus_dir / "documents.zip"
 
     print("=== Проверка качества корпуса corpus_cosmos ===")
     for path in (corpus_dir, docs_dir, csv_path, jsonl_path, readme_path):
@@ -77,6 +79,20 @@ def main() -> None:
         require(record.get("text") == texts_by_name[str(row["file_name"])], f"Полный текст JSONL не совпадает с TXT: {row['file_name']}")
         require(len(record["text"].split()) == int(row["word_count"]), f"Количество слов JSONL не совпадает: {row['file_name']}")
     print(f"[OK] JSONL полностью синхронизирован с CSV и TXT ({len(records)} записей).")
+
+    require(archive_path.exists(), "Архив documents.zip отсутствует")
+    expected_members = {"metadata.csv"} | {f"documents/{name}" for name in expected_files}
+    with zipfile.ZipFile(archive_path, "r") as archive:
+        names = archive.namelist()
+        require(len(names) == len(set(names)), "В documents.zip есть дублирующиеся пути")
+        require(set(names) == expected_members, "Содержимое documents.zip не соответствует текущим CSV/TXT")
+        require(archive.read("metadata.csv") == csv_path.read_bytes(), "metadata.csv внутри архива устарел")
+        for filename in expected_files:
+            require(
+                archive.read(f"documents/{filename}") == (docs_dir / filename).read_bytes(),
+                f"Файл {filename} внутри архива устарел"
+            )
+    print("[OK] documents.zip полностью синхронизирован с текущими CSV/TXT.")
 
     readme_text = readme_path.read_text(encoding="utf-8")
     required_sections = [

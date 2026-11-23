@@ -71,6 +71,13 @@ RAG-Document-Assistant/
    ```
    Откройте файл `notebooks/RAG_Document_Assistant.ipynb` и выполните **Kernel -> Restart Kernel and Run All Cells**. Результат выполнения зависит от доступности модели эмбеддингов, локальной Ollama и сетевого API; в репозитории не заявляется успешный запуск без свежего прогона.
 
+5. **Проверка кода и корпуса:**
+   ```bash
+   python -m pip install pytest pandas requests numpy
+   python -m pytest -q
+   python src/validate_corpus.py
+   ```
+
 4. **(Опционально) Подключение локальной LLM через Ollama:**
    Если вы хотите генерировать ответы через локальную нейросеть:
    ```bash
