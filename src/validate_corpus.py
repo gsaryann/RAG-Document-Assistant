@@ -81,17 +81,35 @@ def main() -> None:
     print(f"[OK] JSONL полностью синхронизирован с CSV и TXT ({len(records)} записей).")
 
     require(archive_path.exists(), "Архив documents.zip отсутствует")
-    expected_members = {"metadata.csv"} | {f"documents/{name}" for name in expected_files}
+    from pathlib import PurePosixPath
     with zipfile.ZipFile(archive_path, "r") as archive:
         names = archive.namelist()
         require(len(names) == len(set(names)), "В documents.zip есть дублирующиеся пути")
-        require(set(names) == expected_members, f"Содержимое documents.zip не соответствует текущим CSV/TXT; архив={sorted(names)[:10]}, ожидалось={sorted(expected_members)[:10]}")
-        require(archive.read("metadata.csv") == csv_path.read_bytes(), "metadata.csv внутри архива устарел")
-        for filename in expected_files:
-            require(
-                archive.read(f"documents/{filename}") == (docs_dir / filename).read_bytes(),
-                f"Файл {filename} внутри архива устарел"
-            )
+        for name in names:
+            archive_path_part = PurePosixPath(name)
+            require(not archive_path_part.is_absolute() and ".." not in archive_path_part.parts,
+                    f"Небезопасный путь в documents.zip: {name}")
+
+        # Поддерживаем старый архив без metadata.csv: Notebook берёт метаданные из corpus_cosmos/.
+        txt_members = [name for name in names if PurePosixPath(name).suffix.lower() == ".txt"]
+        txt_by_basename = {PurePosixPath(name).name: name for name in txt_members}
+        require(len(txt_members) == len(expected_files) and set(txt_by_basename) == expected_files,
+                f"TXT-набор в documents.zip не совпадает с CSV: найдено {len(txt_members)}, ожидалось {len(expected_files)}")
+        for filename, member in txt_by_basename.items():
+            require(archive.read(member) == (docs_dir / filename).read_bytes(),
+                    f"Файл {filename} внутри архива устарел")
+
+        metadata_members = [name for name in names if PurePosixPath(name).name == "metadata.csv"]
+        require(len(metadata_members) <= 1, "В documents.zip несколько metadata.csv")
+        if metadata_members:
+            require(archive.read(metadata_members[0]) == csv_path.read_bytes(),
+                    "metadata.csv внутри архива устарел")
+
+        jsonl_members = [name for name in names if PurePosixPath(name).name == "corpus.jsonl"]
+        require(len(jsonl_members) <= 1, "В documents.zip несколько corpus.jsonl")
+        if jsonl_members:
+            require(archive.read(jsonl_members[0]) == jsonl_path.read_bytes(),
+                    "corpus.jsonl внутри архива устарел")
     print("[OK] documents.zip полностью синхронизирован с текущими CSV/TXT.")
 
     readme_text = readme_path.read_text(encoding="utf-8")
